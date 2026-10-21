@@ -4,46 +4,65 @@
   addEventListener('load', () => root.classList.add('suave'));
   const $ = (s, el = d) => el.querySelector(s), $$ = (s, el = d) => [...el.querySelectorAll(s)];
 
-  /* ---------- um só rAF por imagem para tudo o que o scroll conduz */
+  /* ---------- um só rAF por imagem para o que o scroll conduz */
   const aoScroll = []; let pedido = false;
   const tique = () => { pedido = false; aoScroll.forEach(f => f()); };
-  addEventListener('scroll', () => { if (!pedido) { pedido = true; requestAnimationFrame(tique); } }, { passive: true });
-  addEventListener('resize', () => requestAnimationFrame(tique));
-  const limita = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+  const pede = () => { if (!pedido) { pedido = true; requestAnimationFrame(tique); } };
+  addEventListener('scroll', pede, { passive: true });
+  addEventListener('resize', pede);
 
-  /* ---------- cabeçalho em pílula: esconde a descer, volta a subir */
-  const topo = $('[data-topo]'), barra = $('[data-barra]'), hero = $('[data-hero]');
-  let antes = scrollY;
-  const btn = $('[data-menu-btn]'), menu = $('[data-menu]');
-  aoScroll.push(() => {
-    const y = scrollY, aberto = btn && btn.getAttribute('aria-expanded') === 'true';
-    // a pílula fica sempre visível, no telemóvel e no PC
-    d.body.classList.add('topo-visivel');
-    antes = y;
-    if (barra) {
-      barra.classList.toggle('on', y > (hero ? hero.offsetHeight * .6 : 160));
-      // presa ao ecrã; quando o rodapé entra, sobe com ele e pousa-lhe em cima
-      const rod = $('.rodape'), vh = innerHeight;
-      const sobe = rod ? Math.max(0, vh - rod.getBoundingClientRect().top) : 0;
-      barra.classList.toggle('segue', sobe > 0);
-      barra.style.setProperty('--sobe', sobe + 'px');
-    }
-  });
-  tique();
+  /* ---------- hero com altura fixa no telemóvel: a barra do browser a fechar e a abrir não o redimensiona.
+     O 100svh do Safari já não mexe, mas há browsers dentro de apps que mudam a janela a cada scroll e o hero arrastava a página.
+     Mede-se o 100svh uma vez, numa sonda que não depende do CSS ter chegado, e volta a medir-se só se a largura mudar
+     (rodar o telemóvel) ou se a altura mudar mais do que uma barra de browser muda (ecrã dividido) */
+  const barra = $('[data-barra]'), hero = $('[data-hero]');
+  if (hero && matchMedia('(pointer: coarse)').matches) {
+    // largura e altura do layout (clientWidth/clientHeight da raiz): o zoom de dois dedos e a barra do Safari não as mudam
+    let w = 0, h = 0, fixo = '';
+    const fixa = () => {
+      const s = d.createElement('div');
+      s.style.cssText = 'position:absolute;top:0;left:0;width:0;height:100svh;visibility:hidden;pointer-events:none';
+      d.body.append(s); const v = s.getBoundingClientRect().height; s.remove();
+      w = root.clientWidth; h = root.clientHeight;
+      if (v && v + 'px' !== fixo) { fixo = v + 'px'; root.style.setProperty('--hero-h', fixo); }
+    };
+    fixa();
+    addEventListener('resize', () => { if (root.clientWidth !== w || Math.abs(root.clientHeight - h) > h * .25) fixa(); });
+  }
 
+  /* ---------- barra de contacto: na página inicial aparece depois do hero; nas outras já vem ligada do HTML */
+  if (barra && hero) {
+    // o limiar segue a altura do hero pelo ResizeObserver (numa rede lenta o WebKit corre este script antes de o CSS chegar),
+    // e o scroll só lê o scrollY: nenhuma medida de layout a cada imagem
+    let limiar = hero.offsetHeight * .6;
+    const mede = () => { limiar = hero.offsetHeight * .6; };
+    const ve = () => barra.classList.toggle('on', scrollY > limiar);
+    if ('ResizeObserver' in window) new ResizeObserver(() => { mede(); ve(); }).observe(hero);
+    else aoScroll.push(mede);
+    aoScroll.push(ve);
+    tique();
+  }
+
+  /* ---------- menu do telemóvel */
+  const topo = $('[data-topo]'), btn = $('[data-menu-btn]'), menu = $('[data-menu]');
   if (btn && menu) {
+    let yAbriu = 0;
     const fecha = () => {
-      btn.setAttribute('aria-expanded', 'false'); btn.setAttribute('aria-label', 'Abrir menu');
+      btn.setAttribute('aria-expanded', 'false'); btn.setAttribute('aria-label', btn.dataset.abrir || 'Abrir menu');
       menu.classList.remove('aberto'); setTimeout(() => { if (!menu.classList.contains('aberto')) menu.hidden = true; }, 450);
     };
     btn.addEventListener('click', () => {
       if (btn.getAttribute('aria-expanded') === 'true') return fecha();
       menu.hidden = false; requestAnimationFrame(() => requestAnimationFrame(() => menu.classList.add('aberto')));
-      btn.setAttribute('aria-expanded', 'true'); btn.setAttribute('aria-label', 'Fechar menu');
+      btn.setAttribute('aria-expanded', 'true'); btn.setAttribute('aria-label', btn.dataset.fechar || 'Fechar menu');
+      yAbriu = scrollY;
     });
     $$('a', menu).forEach(a => a.addEventListener('click', fecha));
     addEventListener('keydown', e => { if (e.key === 'Escape' && menu.classList.contains('aberto')) { fecha(); btn.focus(); } });
-    d.addEventListener('click', e => { if (menu.classList.contains('aberto') && !topo.contains(e.target)) fecha(); });
+    // no iPhone o click só chega ao document vindo de ligações e botões; o pointerdown chega de qualquer toque, também do que começa um deslize
+    d.addEventListener('pointerdown', e => { if (menu.classList.contains('aberto') && !topo.contains(e.target)) fecha(); }, { passive: true });
+    // e o painel não fica a flutuar por cima da página que rola por baixo dele
+    aoScroll.push(() => { if (btn.getAttribute('aria-expanded') === 'true' && Math.abs(scrollY - yAbriu) > 24) fecha(); });
   }
 
   /* ---------- título: cada linha entra inteira, sem partir as letras */
@@ -56,24 +75,28 @@
     setTimeout(() => ac && ac.classList.remove('escondido'), calmo ? 0 : 650);
   };
 
-  /* ---------- filme do hero: fotografias reais em fundido */
+  /* ---------- filme do hero: fotografias reais em fundido.
+     Fora do ecrã, ou com o separador escondido, o filme pára onde está: nem troca de fotografia nem Ken Burns a trabalhar
+     por baixo do scroll. Ao voltar continua do mesmo ponto, com o tempo que faltava para a troca seguinte */
   const slides = $$('.slide', $('[data-slides]') || d.createElement('div'));
-  let iSlide = 0, timer = null, parado = false;
+  let iSlide = 0, timer = null, desde = 0, falta = 6000, emVista = true;
   const avanca = () => {
     if (slides.length < 2) return;
     const a = slides[iSlide]; iSlide = (iSlide + 1) % slides.length; const b = slides[iSlide];
     a.classList.add('sai'); a.classList.remove('on'); b.classList.add('on');
     setTimeout(() => a.classList.remove('sai'), 1000);
   };
-  const corre = () => { clearInterval(timer); if (!parado && !calmo) timer = setInterval(avanca, 6000); };
-  const pausa = null;
-  pausa && pausa.addEventListener('click', () => {
-    parado = !parado; pausa.classList.toggle('parado', parado);
-    pausa.setAttribute('aria-label', parado ? 'Retomar imagens' : 'Pausar imagens');
-    $$('.slide img').forEach(i => i.style.animationPlayState = parado ? 'paused' : 'running');
-    corre();
-  });
-  d.addEventListener('visibilitychange', () => { if (d.hidden) clearInterval(timer); else corre(); });
+  const passo = () => { avanca(); desde = performance.now(); falta = 6000; timer = setTimeout(passo, 6000); };
+  const corre = () => {
+    if (calmo || slides.length < 2) return;
+    if (timer) { clearTimeout(timer); timer = null; falta = Math.max(0, falta - (performance.now() - desde)); }
+    const anda = emVista && !d.hidden;
+    hero && hero.classList.toggle('parado', !anda);
+    if (anda) { desde = performance.now(); timer = setTimeout(passo, falta); }
+  };
+  d.addEventListener('visibilitychange', corre);
+  if (hero && 'IntersectionObserver' in window)
+    new IntersectionObserver(([e]) => { if (e.isIntersecting !== emVista) { emVista = e.isIntersecting; corre(); } }).observe(hero);
 
   /* ---------- abertura dentro do site (como na Azul Properties): as fotografias já correm,
      o B é caiado em três passagens por cima da imagem, o nome sobe, e o logótipo voa para a pílula */
@@ -81,11 +104,19 @@
   const logoTopo = $('.topo .marca .logo');
   const semIntro = () => { root.classList.add('intro-feito'); logoTopo && logoTopo.classList.remove('espera'); hero && hero.classList.remove('a-abrir'); mostraTitulo(); };
   if (intro) {
-    // corre sempre que a página inicial carrega, também no recarregar
-    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
-    if (!location.hash) scrollTo(0, 0);
+    // a abertura é para quem chega ao topo. Quem volta atrás ou recarrega a meio fica onde estava: o browser repõe o sítio,
+    // mas só depois de este script correr, por isso cada entrada do histórico guarda a sua posição
+    const tipo = (performance.getEntriesByType('navigation')[0] || {}).type;
+    const guardado = history.state && typeof history.state.y === 'number' ? history.state.y : null;
+    const guarda = () => { try { history.replaceState(Object.assign({}, history.state, { y: Math.max(0, Math.round(scrollY)) }), ''); } catch (e) {} };
+    // guarda-se ao sair (toque numa ligação, recarregar, trocar de app) e não a cada paragem do scroll: para o Safari
+    // cada replaceState é uma navegação dentro da página, e uma navegação pode voltar a abrir a barra que o scroll fechou
+    d.addEventListener('click', guarda, true);
+    addEventListener('pagehide', guarda);
+    d.addEventListener('visibilitychange', () => { if (d.hidden) guarda(); });
+    if (guardado === null) guarda();
     corre();
-    if (calmo || location.hash) semIntro();
+    if (calmo || location.hash || scrollY > 0 || ((tipo === 'reload' || tipo === 'back_forward') && guardado !== 0)) semIntro();
     else {
       hero.classList.add('a-abrir'); logoTopo && logoTopo.classList.add('espera');
       setTimeout(() => intro.classList.add('corre'), 120);   // três passagens de trincha
@@ -109,69 +140,20 @@
           svg.style.transform = `translate(${b.left - a.left}px, ${b.top - a.top}px) scale(${s})`;
           svg.addEventListener('transitionend', e => { if (e.propertyName === 'transform') pousa(); }, { once: true });
           setTimeout(pousa, 1000);
+          // o B vai com a página e a pílula está presa ao ecrã: se a página rolar durante o voo, o destino medido já não serve
+          addEventListener('scroll', pousa, { once: true, passive: true });
         } else pousa();
         setTimeout(mostraTitulo, 350);                       // o título entra enquanto o B voa
       }, 1500);
     }
   } else if (cin) { mostraTitulo(); corre(); }
 
-  /* ---------- títulos palavra a palavra, por trás de uma máscara */
-  $$('h2.revela').forEach(h => {
-    let k = 0; h.classList.add('palavras'); h.classList.remove('revela');
-    const parte = el => [...el.childNodes].forEach(n => {
-      if (n.nodeType === 3) {
-        const frag = d.createDocumentFragment();
-        n.textContent.split(/(\s+)/).forEach(w => {
-          if (!w) return; if (/^\s+$/.test(w)) { frag.append(' '); return; }
-          const o = d.createElement('span'); o.className = 'pw';
-          const i = d.createElement('span'); i.style.setProperty('--k', k++); i.textContent = w; o.append(i); frag.append(o);
-        });
-        n.replaceWith(frag);
-      } else if (n.nodeType === 1) parte(n);
-    });
-    parte(h);
-  });
-
-  /* ---------- parágrafos que se escrevem com o scroll, palavra a palavra */
-  const scrubs = $$('[data-scrub]').map(el => {
-    const ws = el.textContent.trim().split(/\s+/);
-    el.textContent = ''; ws.forEach((w, i) => { const s = d.createElement('span'); s.className = 'sw'; s.textContent = w; el.append(s, i < ws.length - 1 ? ' ' : ''); });
-    return { el, xs: $$('.sw', el) };
-  });
-  if (scrubs.length) aoScroll.push(() => scrubs.forEach(({ el, xs }) => {
-    if (calmo) { xs.forEach(x => x.classList.add('on')); return; }
-    const r = el.getBoundingClientRect(), vh = innerHeight;
-    if (r.top > vh * 1.1 || r.bottom < -vh * .5) return;
-    const n = Math.round(limita((vh * .9 - r.top) / (vh * .5 + r.height * .6)) * xs.length);
-    xs.forEach((x, i) => x.classList.toggle('on', i < n));
-  }));
-
-  /* ---------- números que contam */
-  const conta = el => {
-    const fim = el.textContent, alvo = parseFloat(fim.replace(',', '.')); if (calmo || isNaN(alvo)) return;
-    const t0 = performance.now(), dur = 1300;
-    const f = t => { const p = limita((t - t0) / dur), e = 1 - Math.pow(1 - p, 3); el.textContent = p < 1 ? (alvo * e).toFixed(1).replace('.', ',') : fim; if (p < 1) requestAnimationFrame(f); };
-    el.textContent = '0,0'; requestAnimationFrame(f);
-  };
-
-  /* ---------- revelar ao chegar (threshold 0, sem rootMargin negativo) */
+  /* ---------- revelar ao chegar: títulos e fotografias, cada um como um bloco */
   const io = new IntersectionObserver(es => es.forEach(e => {
     if (!e.isIntersecting) return;
     e.target.classList.add('ve'); io.unobserve(e.target);
-    $$('[data-conta]', e.target).forEach(conta);
   }), { threshold: 0 });
-  $$('.revela, .palavras, .doc, .abre-foto, .cartao, .prev, .cporta, .placa, .prova-in').forEach(el => io.observe(el));
-
-  /* ---------- a fotografia do capítulo abre de moldura a sangrar; parallax leve nas outras */
-  const cap = $('[data-cap]'), para = $$('[data-paralaxe]'), nome = $('[data-desliza]');
-  if (!calmo) aoScroll.push(() => {
-    const vh = innerHeight;
-    if (cap) { const r = cap.getBoundingClientRect(); cap.style.setProperty('--a', limita((vh - r.top) / (vh * .85)).toFixed(4)); }
-    para.forEach(p => { const r = p.getBoundingClientRect(); if (r.bottom < -100 || r.top > vh + 100) return;
-      const k = (r.top + r.height / 2 - vh / 2) / vh; p.style.setProperty('--py', (k * -36).toFixed(1) + 'px'); });
-    if (nome) { const r = nome.getBoundingClientRect(); nome.style.setProperty('--nx', ((r.top - vh / 2) / vh * 60).toFixed(1) + 'px'); }
-  });
-  tique();
+  $$('.revela').forEach(el => io.observe(el));
 
   /* ---------- imagens vivas: acompanham o rato */
   if (matchMedia('(hover: hover)').matches && !calmo) {
@@ -185,52 +167,50 @@
     });
   }
 
-  /* ---------- pista com setas */
-  const pista = $('[data-pista]');
-  if (pista) {
-    const passo = dir => pista.scrollBy({ left: dir * pista.clientWidth * .8, behavior: calmo ? 'auto' : 'smooth' });
-    $('[data-pista-ant]')?.addEventListener('click', () => passo(-1));
-    $('[data-pista-seg]')?.addEventListener('click', () => passo(1));
-  }
-
-  /* ---------- horas de Sintra e do Dubai; o céu do arco segue a hora */
+  /* ---------- horas de Sintra e do Dubai */
   const horas = $$('[data-hora]');
   if (horas.length) {
-    const ceu = $('[data-ceu]');
-    const tic = () => {
-      horas.forEach(h => { h.textContent = new Intl.DateTimeFormat('pt-PT', { hour: '2-digit', minute: '2-digit', timeZone: h.dataset.hora }).format(new Date()); });
-      if (ceu) {
-        const hd = +new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hour12: false, timeZone: 'Asia/Dubai' }).format(new Date());
-        const noite = hd < 6 || hd >= 19, ocaso = (hd >= 17 && hd < 19) || (hd >= 6 && hd < 8);
-        const mn = +new Intl.DateTimeFormat('en-GB', { minute: 'numeric', timeZone: 'Asia/Dubai' }).format(new Date());
-        const hora = hd + mn / 60;
-        ceu.style.setProperty('--c1', noite ? '#16291f' : ocaso ? '#ead2b8' : '#efe9dc');
-        ceu.style.setProperty('--c2', noite ? '#2c4a3d' : ocaso ? '#c98a5c' : '#E8E2D5');
-        ceu.style.setProperty('--h', noite ? '#0f1f18' : '#d8ccb6');
-        // o sol nasce às 6 e põe-se às 18; a lua faz o mesmo caminho à noite
-        const fase = noite ? ((hora + 24 - 18) % 24) / 12 : (hora - 6) / 12;
-        const alt = Math.sin(Math.min(1, Math.max(0, fase)) * Math.PI);
-        ceu.querySelector('[data-astro]')?.style.setProperty('--ay', (72 - alt * 50).toFixed(1) + '%');
-        ceu.querySelector('[data-astro]')?.style.setProperty('--ac', noite ? '#E8E2D5' : ocaso ? '#B06F3F' : '#FAF8F3');
-      }
-    };
+    const tic = () => horas.forEach(h => { const t = new Intl.DateTimeFormat('pt-PT', { hour: '2-digit', minute: '2-digit', timeZone: h.dataset.hora }).format(new Date()); if (h.textContent !== t) h.textContent = t; });
     tic(); setInterval(tic, 20000);
   }
 
-  /* ---------- filtros da lista */
+  /* ---------- filtros da lista: cada subsecção mostra a sua contagem e esconde-se quando fica vazia */
   const f = $('[data-filtros]');
   if (f) {
-    const cards = $$('[data-grelha] .cartao'), cont = $('[data-contagem]'), vazio = $('[data-vazio]');
-    const aplica = () => {
+    const grupos = $$('[data-grupo]'), cont = $('[data-contagem]'), vazio = $('[data-vazio]');
+    const procuraDoGrupo = grupos[0] && $('.cartao-procura', grupos[0]);
+    const estado = () => [f.tipo.value, f.zona.value, f.preco.value].join('|');
+    let feito = '||';
+    const aplica = (rola = true) => {
+      feito = estado();
       const t = f.tipo.value, z = f.zona.value, [pmin, pmax] = (f.preco.value || '0-1e12').split('-').map(Number);
-      let n = 0;
-      cards.forEach(c => {
-        const ok = (!t || c.dataset.tipo === t) && (!z || c.dataset.zona === z) && (+c.dataset.preco >= pmin && +c.dataset.preco <= pmax);
-        c.hidden = !ok; if (ok) n++;
+      let total = 0;
+      grupos.forEach(g => {
+        let n = 0;
+        $$('.cartao', g).forEach(c => {
+          const ok = (!t || c.dataset.tipo === t) && (!z || c.dataset.zona === z) && (+c.dataset.preco >= pmin && +c.dataset.preco <= pmax);
+          c.hidden = !ok; if (ok) n++;
+        });
+        g.hidden = n === 0; $('[data-grupo-n]', g).textContent = n; total += n;
       });
-      cont.textContent = n; vazio.hidden = n > 0;
+      cont.textContent = total; vazio.hidden = total > 0;
+      // o «Não encontrou?» do primeiro grupo só fica com outro grupo depois dele: o fim da lista já tem um
+      if (procuraDoGrupo) procuraDoGrupo.hidden = !grupos.slice(1).some(g => !g.hidden);
+      // com a barra presa, a lista encolhe por cima do leitor: os resultados passam a começar logo por baixo da barra
+      if (rola && f.classList.contains('preso')) {
+        const alvo = grupos.find(g => !g.hidden) || vazio;
+        scrollTo({ top: alvo.getBoundingClientRect().top + scrollY - f.getBoundingClientRect().bottom - 16, behavior: 'instant' });
+      }
     };
-    f.addEventListener('change', aplica);
+    f.addEventListener('change', () => aplica());
+    // quem volta de uma ficha encontra os filtros como os deixou (o browser repõe-nos): a lista filtra-se já,
+    // antes de o browser repor a posição, para voltar ao mesmo cartão e não a outro
+    if (estado() !== feito) aplica(false);
+    addEventListener('pageshow', () => { if (estado() !== feito) aplica(false); });
+    // presa ao topo: uma faixa de cal por cima, para as fotografias não passarem à volta da pílula.
+    // numa rede lenta o WebKit corre este script antes de o CSS chegar e o top ainda é «auto»: 72 é o do telemóvel
+    new IntersectionObserver(([e]) => f.classList.toggle('preso', e.boundingClientRect.top <= e.rootBounds.top),
+      { threshold: [1], rootMargin: `-${(parseFloat(getComputedStyle(f).top) || 72) + 1}px 0px 0px 0px` }).observe(f);
   }
 
   /* ---------- galeria da ficha: uma fotografia de cada vez, para o lado; toque abre o ecrã inteiro */
@@ -239,8 +219,10 @@
     const n = $('[data-gal-n]'), itens = $$('.gal-item', gp), total = itens.length;
     const ant = $('[data-gal-ant]'), seg = $('[data-gal-seg]');
     const atual = () => Math.round(gp.scrollLeft / gp.clientWidth);
-    const vai = i => gp.scrollTo({ left: Math.max(0, Math.min(total - 1, i)) * gp.clientWidth, behavior: calmo ? 'auto' : 'smooth' });
-    const marca = () => { const i = atual(); n.textContent = i + 1; ant && (ant.disabled = i === 0); seg && (seg.disabled = i >= total - 1); };
+    const vai = i => gp.scrollTo({ left: Math.max(0, Math.min(total - 1, i)) * gp.clientWidth, behavior: calmo ? 'instant' : 'smooth' });
+    // o scroll da galeria dá um evento por imagem: escreve-se só quando a fotografia muda
+    let vista = -1;
+    const marca = () => { const i = atual(); if (i === vista) return; vista = i; n.textContent = i + 1; ant && (ant.disabled = i === 0); seg && (seg.disabled = i >= total - 1); };
     gp.addEventListener('scroll', marca, { passive: true }); marca();
     ant && ant.addEventListener('click', () => vai(atual() - 1));
     seg && seg.addEventListener('click', () => vai(atual() + 1));
@@ -253,18 +235,22 @@
       itens.forEach(it => {
         const im = $('img', it), f = d.createElement('figure'), i2 = d.createElement('img');
         i2.alt = im.alt; i2.decoding = 'async'; i2.loading = 'lazy';
-        i2.srcset = im.srcset; i2.sizes = '100vw'; i2.src = im.src; f.append(i2); lp.append(f);
+        i2.srcset = im.srcset; i2.sizes = '100vw'; i2.src = im.src; f.append(i2);
+        const etq = $('.gal-etq', it); if (etq) f.append(etq.cloneNode(true));
+        lp.append(f);
       });
     };
     const li = () => Math.round(lp.scrollLeft / lp.clientWidth);
-    const lvai = i => lp.scrollTo({ left: Math.max(0, Math.min(total - 1, i)) * lp.clientWidth, behavior: calmo ? 'auto' : 'smooth' });
-    const lmarca = () => { const i = li(); ln.textContent = i + 1; $('[data-lupa-ant]').disabled = i === 0; $('[data-lupa-seg]').disabled = i >= total - 1; };
+    const lvai = i => lp.scrollTo({ left: Math.max(0, Math.min(total - 1, i)) * lp.clientWidth, behavior: calmo ? 'instant' : 'smooth' });
+    let lvista = -1;
+    const lmarca = () => { const i = li(); if (i === lvista) return; lvista = i; ln.textContent = i + 1; $('[data-lupa-ant]').disabled = i === 0; $('[data-lupa-seg]').disabled = i >= total - 1; };
     lp.addEventListener('scroll', lmarca, { passive: true });
     const abre = i => {
       monta(); origem = d.activeElement; lupa.hidden = false; d.body.style.overflow = 'hidden';
       lp.scrollLeft = i * lp.clientWidth; lmarca(); $('[data-lupa-x]').focus();
     };
-    const fecha = () => { const i = li(); lupa.hidden = true; d.body.style.overflow = ''; gp.scrollLeft = i * gp.clientWidth; marca(); origem && origem.focus && origem.focus(); };
+    // fecha no sítio: a galeria salta para a fotografia vista, sem passar pelas do meio
+    const fecha = () => { const i = li(); lupa.hidden = true; d.body.style.overflow = ''; gp.scrollTo({ left: i * gp.clientWidth, behavior: 'instant' }); marca(); origem && origem.focus && origem.focus({ preventScroll: true }); };
     itens.forEach((it, i) => it.addEventListener('click', () => abre(i)));
     $('[data-lupa-x]').addEventListener('click', fecha);
     $('[data-lupa-ant]').addEventListener('click', () => lvai(li() - 1));
